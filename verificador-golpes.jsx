@@ -57,6 +57,7 @@ const STYLE = `
 
 const BRANDS = {
   "banco do brasil": ["bb.com.br"],
+  bb: ["bb.com.br"],
   bradesco: ["bradesco.com.br"],
   itau: ["itau.com.br"],
   caixa: ["caixa.gov.br"],
@@ -104,18 +105,21 @@ const BRANDS = {
   "gov.br": ["gov.br"],
 };
 
+function norm(s) {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
+}
+
 const OTP_WORDS = ["código de verificação", "código de autenticação", "use o código", "seu código é", "authentication code", "verification code", "código de acesso"];
-const POINTS_WORDS = ["pontos", "milhas", "cashback", "vantagens", "resgate", "resgatar", "milheiro"];
+const POINTS_RE = /pont[ou]|milhas|cashback|vantagens|resgat|milheiro/i;
 
 const ALLOWED_TLD_RE = /\.(gov\.br|com\.br|org\.br|net\.br|edu\.br|jus\.br|leg\.br|mil\.br|mp\.br|def\.br|com|org|net|edu)$/i;
 const SHORTENERS = ["bit.ly", "tinyurl.com", "is.gd", "t.co", "cutt.ly", "shorturl.at", "encurtador.com.br", "rebrand.ly"];
-const URGENCY_WORDS = ["urgente", "imediatamente", "última chance", "últimas horas", "hoje mesmo", "bloqueado", "bloqueada", "suspensa", "suspenso", "vai expirar", "expira hoje", "confirme agora", "não perca", "ação necessária"];
+const URGENCY_WORDS = ["urgente", "imediatamente", "última chance", "últimas horas", "hoje mesmo", "bloqueado", "bloqueada", "suspensa", "suspenso", "vai expirar", "expira hoje", "confirme agora", "não perca", "ação necessária", "somente hoje"];
 const DATA_WORDS = ["senha", "cvv", "código de verificação", "chave pix", "cpf", "dados bancários", "cartão de crédito", "token"];
 const TOOGOOD_WORDS = ["prêmio", "sorteio", "herança", "você ganhou", "foi selecionado", "restituição", "dinheiro fácil"];
 const MONEY_REQUEST_WORDS = ["faça um pix", "faz um pix", "me manda", "me empresta", "empresta dinheiro", "transferência", "transfere", "deposite", "deposita", "me deve", "preciso de dinheiro", "preciso urgente de"];
 const ISOLATION_WORDS = ["não conta", "não fala pra", "não avisa", "mantenha em sigilo", "só entre nós", "não comenta com ninguém", "guarda segredo"];
 const NUMBER_CHANGE_WORDS = ["número novo", "troquei de número", "caiu na privada", "quebrei o celular", "perdi o celular", "celular quebrou", "esse é meu número"];
-const DEVICE_RELEASE_WORDS = ["libere seu android", "libere seu celular", "libere seu computador", "liberar seu dispositivo", "liberação de equipamento", "libere seu aparelho", "atualize seu aplicativo", "atualize seu app", "instale o módulo de segurança", "habilitar bb code", "habilite o bb code"];
 const DEVICE_RELEASE_WORDS = ["libere seu android", "libere seu iphone", "libere seu celular", "libere seu computador", "libere o dispositivo", "liberar dispositivo", "autorize seu dispositivo", "autorizar seu dispositivo", "atualize seu aplicativo", "atualizar módulo de segurança", "instale o módulo de segurança", "instalar módulo de segurança"];
 
 function extractUrls(text) {
@@ -160,10 +164,15 @@ function analyzeUrl(raw) {
     score += 10;
   }
 
+  const hostLabels = host.split(".");
   for (const [brand, officialDomains] of Object.entries(BRANDS)) {
     const brandKey = brand.replace(/[^a-z0-9]/g, "");
     if (brandKey.length < 2) continue;
-    if (host.replace(/[^a-z0-9]/g, "").includes(brandKey) && !officialDomains.some((d) => host === d || host.endsWith("." + d))) {
+    const isOfficial = officialDomains.some((d) => host === d || host.endsWith("." + d));
+    const matches = brandKey.length <= 3
+      ? hostLabels.includes(brandKey)
+      : host.replace(/[^a-z0-9]/g, "").includes(brandKey);
+    if (matches && !isOfficial) {
       flags.push({ label: `Menciona "${brand}" mas o domínio não é o oficial (${officialDomains[0]})`, weight: "high" });
       score += 55;
       break;
@@ -178,16 +187,16 @@ function analyzeUrl(raw) {
 }
 
 function analyzeText(text, hasLink) {
-  const lower = text.toLowerCase();
+  const lower = norm(text);
   const flags = [];
   let score = 0;
 
-  const urgency = URGENCY_WORDS.filter((w) => lower.includes(w));
+  const urgency = URGENCY_WORDS.filter((w) => lower.includes(norm(w)));
   if (urgency.length) {
     flags.push({ label: `Linguagem de urgência artificial ("${urgency[0]}")`, weight: "warn" });
     score += 12 * Math.min(urgency.length, 2);
   }
-  const hasSuspensionThreat = /(suspens[ãa]o|suspens[oa]|cancelamento|bloqueio|restri[çc][ãa]o)/i.test(lower) && /(conta|cart[ãa]o|cnh|cadastro|acesso|documento)/i.test(lower);
+  const hasSuspensionThreat = /(suspens(a|o|ao)|cancelamento|bloqueio|restricao)/i.test(lower) && /(conta|cartao|cnh|cadastro|acesso|documento)/i.test(lower);
   if (hasSuspensionThreat && hasLink) {
     flags.push({ label: `Ameaça de suspensão/bloqueio de conta, cartão ou documento + link — padrão comum de phishing, mesmo sem nenhuma marca reconhecida no domínio`, weight: "high" });
     score += 55;
@@ -195,19 +204,19 @@ function analyzeText(text, hasLink) {
     flags.push({ label: `Ameaça de suspensão/bloqueio de conta, cartão ou documento`, weight: "warn" });
     score += 15;
   }
-  const dataAsk = DATA_WORDS.filter((w) => lower.includes(w));
+  const dataAsk = DATA_WORDS.filter((w) => lower.includes(norm(w)));
   if (dataAsk.length) {
     flags.push({ label: `Pede diretamente dado sensível ("${dataAsk[0]}")`, weight: "high" });
     score += 55;
   }
-  const tooGood = TOOGOOD_WORDS.filter((w) => lower.includes(w));
+  const tooGood = TOOGOOD_WORDS.filter((w) => lower.includes(norm(w)));
   if (tooGood.length) {
     flags.push({ label: `Promessa vantajosa demais ("${tooGood[0]}")`, weight: "warn" });
     score += 22;
   }
-  const money = MONEY_REQUEST_WORDS.filter((w) => lower.includes(w));
-  const isolation = ISOLATION_WORDS.filter((w) => lower.includes(w));
-  const numberChange = NUMBER_CHANGE_WORDS.filter((w) => lower.includes(w));
+  const money = MONEY_REQUEST_WORDS.filter((w) => lower.includes(norm(w)));
+  const isolation = ISOLATION_WORDS.filter((w) => lower.includes(norm(w)));
+  const numberChange = NUMBER_CHANGE_WORDS.filter((w) => lower.includes(norm(w)));
   if (money.length && (isolation.length || numberChange.length)) {
     flags.push({ label: `Padrão de "golpe do parente/conhecido": pede dinheiro e ${isolation.length ? "pede sigilo" : "avisa troca de número"}`, weight: "high" });
     score += 55;
@@ -215,20 +224,20 @@ function analyzeText(text, hasLink) {
     flags.push({ label: `Pedido direto de transferência/dinheiro ("${money[0]}")`, weight: "warn" });
     score += 15;
   }
-  const deviceRelease = DEVICE_RELEASE_WORDS.filter((w) => lower.includes(w));
+  const deviceRelease = DEVICE_RELEASE_WORDS.filter((w) => lower.includes(norm(w)));
   if (deviceRelease.length) {
     flags.push({ label: `Pede para "liberar"/"atualizar" celular ou app — bancos nunca solicitam isso por SMS/link ("${deviceRelease[0]}")`, weight: "high" });
     score += 55;
   }
-  const hasDigitReply = /\(?[12]\)?[^a-z0-9]{0,15}(confirma|bloque|cancel|autoriz)/i.test(text);
-  const hasTransactionContext = /r\$|transa[cç][aã]o|compra de|débito de|débito no valor/i.test(lower);
+  const hasDigitReply = /\(?[12]\)?[^a-z0-9]{0,15}(confirma|bloque|cancel|autoriz)/i.test(lower);
+  const hasTransactionContext = /r\$|transacao|compra de|debito de|debito no valor/i.test(lower);
   if (hasDigitReply && hasTransactionContext) {
     flags.push({ label: `Pede para responder com um número (1/2) pra "confirmar" ou "bloquear" uma transação — golpe clássico de SMS, o objetivo é validar que seu número está ativo`, weight: "high" });
     score += 55;
   }
-  const otpMatch = OTP_WORDS.some((w) => lower.includes(w)) && /\b\d{4,8}\b/.test(text);
+  const otpMatch = OTP_WORDS.some((w) => lower.includes(norm(w))) && /\b\d{4,8}\b/.test(text);
   if (otpMatch) {
-    const mentionedBrand = Object.keys(BRANDS).find((b) => lower.includes(b));
+    const mentionedBrand = Object.keys(BRANDS).find((b) => lower.includes(norm(b)));
     flags.push({
       label: mentionedBrand
         ? `Código de verificação da ${mentionedBrand} — nunca compartilhe com ninguém, nem quem ligar dizendo ser suporte`
@@ -246,12 +255,12 @@ function analyzeText(text, hasLink) {
     });
     score += 10;
   }
-  const points = POINTS_WORDS.filter((w) => lower.includes(w));
+  const hasPoints = POINTS_RE.test(lower);
   const hasBigNumber = /\d{2,3}[.,]\d{3}|\b\d{2,}\s*mil\b/i.test(text);
-  if (points.length && hasLink && (hasBigNumber || points.length >= 2)) {
+  if (hasPoints && hasLink && hasBigNumber) {
     flags.push({ label: `Padrão de "golpe dos pontos/milhas": quantidade chamativa de pontos + link para "resgatar" — golpe de SMS bem documentado no Brasil`, weight: "high" });
     score += 55;
-  } else if (points.length && hasLink) {
+  } else if (hasPoints && hasLink) {
     flags.push({ label: `Oferta de pontos/cashback com link — confirme direto no app oficial antes de clicar`, weight: "warn" });
     score += 15;
   }
