@@ -13,7 +13,7 @@
     --paper: #EDE8DC; --paper-dim: #E2DCCC; --ink: #1C2430; --ink-soft: #4A5060;
     --navy: #10192A; --navy-soft: #1B2740; --line: #C7BEA6;
     --red: #9C3A2C; --red-bg: #F3E2DA; --amber: #96692B; --amber-bg: #F1E6D2;
-    --green: #2C6B4C; --green-bg: #DEE9DF;
+    --green: #2C6B4C; --green-bg: #DEE9DF; --info: #2C5B7A;
   }
   * { box-sizing: border-box; }
   body { margin: 0; font-family: 'IBM Plex Sans', sans-serif; background: var(--navy); color: var(--ink); min-height: 100vh; }
@@ -73,7 +73,7 @@ const BRANDS = {
   caixa: ["caixa.gov.br"], nubank: ["nubank.com.br"], santander: ["santander.com.br"],
   "banco inter": ["bancointer.com.br"], "c6 bank": ["c6bank.com.br"], sicredi: ["sicredi.com.br"],
   sicoob: ["sicoob.com.br"], pagbank: ["pagbank.com.br"], pagseguro: ["pagseguro.com.br"],
-  correios: ["correios.com.br"], "receita federal": ["gov.br"], inss: ["gov.br"], detran: ["gov.br"],
+  correios: ["correios.com.br"], "receita federal": ["gov.br"], inss: ["gov.br"], detran: ["gov.br"], denatran: ["gov.br"], senatran: ["gov.br"],
   "auxilio brasil": ["gov.br"], "bolsa familia": ["gov.br"], serasa: ["serasa.com.br"], spc: ["spcbrasil.org.br"],
   picpay: ["picpay.com"], "mercado livre": ["mercadolivre.com.br", "mercadolibre.com"],
   "mercado pago": ["mercadopago.com.br", "mercadopago.com"], "casas bahia": ["casasbahia.com.br"],
@@ -81,9 +81,11 @@ const BRANDS = {
   shopee: ["shopee.com.br"], ifood: ["ifood.com.br"], uber: ["uber.com"], "99": ["99app.com"],
   vivo: ["vivo.com.br"], claro: ["claro.com.br"], tim: ["tim.com.br"], oi: ["oi.com.br"],
   whatsapp: ["whatsapp.com"], instagram: ["instagram.com"], facebook: ["facebook.com"],
-  netflix: ["netflix.com"], spotify: ["spotify.com"], apple: ["apple.com"], "gov.br": ["gov.br"],
+  netflix: ["netflix.com"], spotify: ["spotify.com"], apple: ["apple.com"], microsoft: ["microsoft.com", "live.com", "outlook.com"], google: ["google.com", "gmail.com"], "gov.br": ["gov.br"],
 };
-const SUSPICIOUS_TLDS = [".top", ".xyz", ".tk", ".club", ".vip", ".info", ".online", ".site", ".click", ".gq", ".cf", ".buzz"];
+const OTP_WORDS = ["código de verificação","código de autenticação","use o código","seu código é","authentication code","verification code","código de acesso"];
+const POINTS_WORDS = ["pontos","milhas","cashback","vantagens","resgate","resgatar","milheiro"];
+const ALLOWED_TLD_RE = /\.(gov\.br|com\.br|org\.br|net\.br|edu\.br|jus\.br|leg\.br|mil\.br|mp\.br|def\.br|com|org|net|edu)$/i;
 const SHORTENERS = ["bit.ly", "tinyurl.com", "is.gd", "t.co", "cutt.ly", "shorturl.at", "encurtador.com.br", "rebrand.ly"];
 const URGENCY_WORDS = ["urgente","imediatamente","última chance","últimas horas","hoje mesmo","bloqueado","bloqueada","suspensa","suspenso","vai expirar","expira hoje","confirme agora","não perca","ação necessária"];
 const DATA_WORDS = ["senha","cvv","código de verificação","chave pix","cpf","dados bancários","cartão de crédito","token"];
@@ -93,18 +95,23 @@ const ISOLATION_WORDS = ["não conta","não fala pra","não avisa","mantenha em 
 const NUMBER_CHANGE_WORDS = ["número novo","troquei de número","caiu na privada","quebrei o celular","perdi o celular","celular quebrou","esse é meu número"];
 const DEVICE_RELEASE_WORDS = ["libere seu android","libere seu celular","libere seu computador","liberar seu dispositivo","liberação de equipamento","libere seu aparelho","atualize seu aplicativo","atualize seu app","instale o módulo de segurança","habilitar bb code","habilite o bb code"];
 
-function extractUrls(text) { return text.match(/(https?:\/\/[^\s]+|www\.[^\s]+)/gi) || []; }
+function extractUrls(text) {
+  const withPrefix = text.match(/(https?:\/\/[^\s]+|www\.[^\s]+)/gi) || [];
+  const bareDomainRaw = text.match(/\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+(?:com|com\.br|org|org\.br|net|gov\.br|gov|info|xyz|top|online|site|club|vip|click|app|link|co|me|io|cc|tv|cyou|sbs|icu)(?:\/[^\s]*)?\b/gi) || [];
+  const bareDomain = bareDomainRaw.filter((bd) => !withPrefix.some((wp) => wp.includes(bd)));
+  return [...new Set([...withPrefix, ...bareDomain])];
+}
 
 function analyzeUrl(raw) {
   const flags = []; let score = 0; let url;
   try { url = new URL(raw.startsWith("http") ? raw : "http://" + raw); }
   catch { return { flags: [{ label: "URL malformada — não foi possível interpretar o endereço", weight: "warn" }], score: 15 }; }
   const host = url.hostname.toLowerCase();
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) { flags.push({ label: "O endereço usa um número IP em vez de um domínio — comum em phishing", weight: "high" }); score += 35; }
-  if (raw.includes("@")) { flags.push({ label: "O link contém '@', técnica usada para disfarçar o destino real", weight: "high" }); score += 30; }
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) { flags.push({ label: "O endereço usa um número IP em vez de um domínio — comum em phishing", weight: "high" }); score += 55; }
+  if (raw.includes("@")) { flags.push({ label: "O link contém '@', técnica usada para disfarçar o destino real", weight: "high" }); score += 55; }
   if (SHORTENERS.some((s) => host.includes(s))) { flags.push({ label: "Encurtador de link — esconde o destino final", weight: "warn" }); score += 20; }
-  const suspiciousTld = SUSPICIOUS_TLDS.find((tld) => host.endsWith(tld));
-  if (suspiciousTld) { flags.push({ label: `Domínio de topo pouco comum para empresas brasileiras (${suspiciousTld})`, weight: "warn" }); score += 15; }
+  const suspiciousTld = !ALLOWED_TLD_RE.test(host);
+  if (suspiciousTld) { flags.push({ label: `Domínio de topo (".${host.split(".").slice(-1)[0]}") incomum para instituições/empresas brasileiras`, weight: "warn" }); score += 15; }
   if (host.split(".").length > 4) { flags.push({ label: "Domínio com muitos subníveis, técnica comum para disfarçar a marca imitada", weight: "warn" }); score += 10; }
   for (const [brand, officialDomains] of Object.entries(BRANDS)) {
     const brandKey = brand.replace(/[^a-z0-9]/g, "");
@@ -117,30 +124,54 @@ function analyzeUrl(raw) {
   return { flags, score: Math.min(score, 100), host };
 }
 
-function analyzeText(text) {
+function analyzeText(text, hasLink) {
   const lower = text.toLowerCase(); const flags = []; let score = 0;
   const urgency = URGENCY_WORDS.filter((w) => lower.includes(w));
   if (urgency.length) { flags.push({ label: `Linguagem de urgência artificial ("${urgency[0]}")`, weight: "warn" }); score += 12 * Math.min(urgency.length, 2); }
   const dataAsk = DATA_WORDS.filter((w) => lower.includes(w));
-  if (dataAsk.length) { flags.push({ label: `Pede diretamente dado sensível ("${dataAsk[0]}")`, weight: "high" }); score += 30; }
+  if (dataAsk.length) { flags.push({ label: `Pede diretamente dado sensível ("${dataAsk[0]}")`, weight: "high" }); score += 55; }
   const tooGood = TOOGOOD_WORDS.filter((w) => lower.includes(w));
   if (tooGood.length) { flags.push({ label: `Promessa vantajosa demais ("${tooGood[0]}")`, weight: "warn" }); score += 22; }
   const money = MONEY_REQUEST_WORDS.filter((w) => lower.includes(w));
   const isolation = ISOLATION_WORDS.filter((w) => lower.includes(w));
   const numberChange = NUMBER_CHANGE_WORDS.filter((w) => lower.includes(w));
   if (money.length && (isolation.length || numberChange.length)) {
-    flags.push({ label: `Padrão de "golpe do parente/conhecido": pede dinheiro e ${isolation.length ? "pede sigilo" : "avisa troca de número"}`, weight: "high" }); score += 45;
+    flags.push({ label: `Padrão de "golpe do parente/conhecido": pede dinheiro e ${isolation.length ? "pede sigilo" : "avisa troca de número"}`, weight: "high" }); score += 55;
   } else if (money.length) {
     flags.push({ label: `Pedido direto de transferência/dinheiro ("${money[0]}")`, weight: "warn" }); score += 15;
   }
   const deviceRelease = DEVICE_RELEASE_WORDS.filter((w) => lower.includes(w));
   if (deviceRelease.length) {
-    flags.push({ label: `Pede para "liberar"/"atualizar" celular ou app — bancos nunca solicitam isso por SMS/link ("${deviceRelease[0]}")`, weight: "high" }); score += 50;
+    flags.push({ label: `Pede para "liberar"/"atualizar" celular ou app — bancos nunca solicitam isso por SMS/link ("${deviceRelease[0]}")`, weight: "high" }); score += 55;
   }
   const hasDigitReply = /\(?[12]\)?[^a-z0-9]{0,15}(confirma|bloque|cancel|autoriz)/i.test(text);
   const hasTransactionContext = /r\$|transa[cç][aã]o|compra de|débito de|débito no valor/i.test(lower);
   if (hasDigitReply && hasTransactionContext) {
-    flags.push({ label: `Pede para responder com um número (1/2) pra "confirmar" ou "bloquear" uma transação — golpe clássico de SMS, o objetivo é validar que seu número está ativo`, weight: "high" }); score += 50;
+    flags.push({ label: `Pede para responder com um número (1/2) pra "confirmar" ou "bloquear" uma transação — golpe clássico de SMS, o objetivo é validar que seu número está ativo`, weight: "high" }); score += 55;
+  }
+  const otpMatch = OTP_WORDS.some((w) => lower.includes(w)) && /\b\d{4,8}\b/.test(text);
+  if (otpMatch) {
+    const mentionedBrand = Object.keys(BRANDS).find((b) => lower.includes(b));
+    flags.push({
+      label: mentionedBrand
+        ? `Código de verificação da ${mentionedBrand} — nunca compartilhe com ninguém, nem quem ligar dizendo ser suporte`
+        : `Código de verificação — nunca compartilhe com ninguém, nem quem ligar dizendo ser suporte`,
+      weight: "info",
+    });
+    score += 5;
+  }
+  const phoneMatches = text.match(/\b\d{10,15}\b/g) || [];
+  const oddPhone = phoneMatches.find((p) => ![10, 11, 12, 13].includes(p.length));
+  if (oddPhone) {
+    flags.push({ label: `Número de telefone com formato incomum (${oddPhone.length} dígitos) — evite retornar a ligação sem confirmar; pode ser spoofing ou golpe do tipo "wangiri"`, weight: "info" });
+    score += 10;
+  }
+  const points = POINTS_WORDS.filter((w) => lower.includes(w));
+  const hasBigNumber = /\d{2,3}[.,]\d{3}|\b\d{2,}\s*mil\b/i.test(text);
+  if (points.length && hasLink && (hasBigNumber || points.length >= 2)) {
+    flags.push({ label: `Padrão de "golpe dos pontos/milhas": quantidade chamativa de pontos + link para "resgatar" — golpe de SMS bem documentado no Brasil`, weight: "high" }); score += 55;
+  } else if (points.length && hasLink) {
+    flags.push({ label: `Oferta de pontos/cashback com link — confirme direto no app oficial antes de clicar`, weight: "warn" }); score += 15;
   }
   if (flags.length === 0) flags.push({ label: "Nenhum padrão de engenharia social óbvio no texto", weight: "ok" });
   return { flags, score: Math.min(score, 100) };
@@ -152,14 +183,15 @@ function verdictFromScore(score) {
   return { label: "SEM SINAIS EVIDENTES — na dúvida, confirme", color: "var(--green)" };
 }
 
-function iconFor(weight) { return weight === "high" ? "⚠️" : weight === "warn" ? "⚠️" : "✅"; }
+function iconFor(weight) { return weight === "high" ? "⚠️" : weight === "warn" ? "⚠️" : weight === "info" ? "ℹ️" : "✅"; }
 
 function analyze(text) {
   const urls = extractUrls(text);
   const urlAnalyses = urls.map((u) => ({ url: u, ...analyzeUrl(u) }));
-  const textAnalysis = analyzeText(text);
+  const textAnalysis = analyzeText(text, urls.length > 0);
   const urlScore = urlAnalyses.length ? Math.max(...urlAnalyses.map((a) => a.score)) : 0;
-  const combinedScore = urlAnalyses.length ? Math.round(urlScore * 0.55 + textAnalysis.score * 0.45) : textAnalysis.score;
+  const weighted = urlAnalyses.length ? Math.round(urlScore * 0.55 + textAnalysis.score * 0.45) : textAnalysis.score;
+  const combinedScore = Math.max(urlScore, textAnalysis.score, weighted);
   const verdict = verdictFromScore(combinedScore);
   const allFlags = [...urlAnalyses.flatMap((a) => a.flags), ...textAnalysis.flags];
 
