@@ -89,7 +89,8 @@ const POINTS_RE = /pont[ou]|milhas|cashback|vantagens|resgat|milheiro/i;
 const ALLOWED_TLD_RE = /\.(gov\.br|com\.br|org\.br|net\.br|edu\.br|jus\.br|leg\.br|mil\.br|mp\.br|def\.br|com|org|net|edu)$/i;
 const SHORTENERS = ["bit.ly", "tinyurl.com", "is.gd", "t.co", "cutt.ly", "shorturl.at", "encurtador.com.br", "rebrand.ly"];
 const URGENCY_WORDS = ["urgente","imediatamente","última chance","últimas horas","hoje mesmo","bloqueado","bloqueada","suspensa","suspenso","vai expirar","expira hoje","confirme agora","não perca","ação necessária","somente hoje"];
-const DATA_WORDS = ["senha","cvv","código de verificação","chave pix","cpf","dados bancários","cartão de crédito","token"];
+const DATA_WORDS = ["senha","cvv","chave pix","cpf","dados bancários","cartão de crédito","token"];
+const CODE_REQUEST_RE = /(informe|digite|envie|repasse|passe|compartilhe|leia)\s+(o\s+|seu\s+)?codigo/i;
 const TOOGOOD_WORDS = ["prêmio","sorteio","herança","você ganhou","foi selecionado","restituição","dinheiro fácil"];
 const MONEY_REQUEST_WORDS = ["faça um pix","faz um pix","me manda","me empresta","empresta dinheiro","transferência","transfere","deposite","deposita","me deve","preciso de dinheiro","preciso urgente de"];
 const ISOLATION_WORDS = ["não conta","não fala pra","não avisa","mantenha em sigilo","só entre nós","não comenta com ninguém","guarda segredo"];
@@ -140,6 +141,9 @@ function analyzeText(text, hasLink) {
   }
   const dataAsk = DATA_WORDS.filter((w) => lower.includes(norm(w)));
   if (dataAsk.length) { flags.push({ label: `Pede diretamente dado sensível ("${dataAsk[0]}")`, weight: "high" }); score += 55; }
+  if (CODE_REQUEST_RE.test(lower)) {
+    flags.push({ label: `Pede para você informar/repassar um código de verificação — golpe comum de captura de código (alguém tentando entrar numa conta usando seu código)`, weight: "high" }); score += 55;
+  }
   const tooGood = TOOGOOD_WORDS.filter((w) => lower.includes(norm(w)));
   if (tooGood.length) { flags.push({ label: `Promessa vantajosa demais ("${tooGood[0]}")`, weight: "warn" }); score += 22; }
   const money = MONEY_REQUEST_WORDS.filter((w) => lower.includes(norm(w)));
