@@ -90,7 +90,7 @@ const BRANDS = {
   ifood: ["ifood.com.br"],
   uber: ["uber.com"],
   "99": ["99app.com"],
-  vivo: ["vivo.com.br"],
+  vivo: ["vivo.com.br", "vivo"],
   claro: ["claro.com.br"],
   tim: ["tim.com.br"],
   oi: ["oi.com.br"],
@@ -154,7 +154,26 @@ function analyzeUrl(raw) {
     flags.push({ label: "Encurtador de link — esconde o destino final", weight: "warn" });
     score += 20;
   }
-  const suspiciousTld = !ALLOWED_TLD_RE.test(host);
+
+  const hostLabels = host.split(".");
+  let brandOfficial = false;
+  let brandImpersonation = null;
+  for (const [brand, officialDomains] of Object.entries(BRANDS)) {
+    const brandKey = brand.replace(/[^a-z0-9]/g, "");
+    if (brandKey.length < 2) continue;
+    const isOfficial = officialDomains.some((d) => host === d || host.endsWith("." + d));
+    if (isOfficial) brandOfficial = true;
+    const matches = brandKey.length <= 3
+      ? hostLabels.includes(brandKey)
+      : host.replace(/[^a-z0-9]/g, "").includes(brandKey);
+    if (matches && !isOfficial && !brandImpersonation) brandImpersonation = { brand, officialDomains };
+  }
+  if (brandImpersonation) {
+    flags.push({ label: `Menciona "${brandImpersonation.brand}" mas o domínio não é o oficial (${brandImpersonation.officialDomains[0]})`, weight: "high" });
+    score += 55;
+  }
+
+  const suspiciousTld = !ALLOWED_TLD_RE.test(host) && !brandOfficial;
   if (suspiciousTld) {
     flags.push({ label: `Domínio de topo (".${host.split(".").slice(-1)[0]}") incomum para instituições/empresas brasileiras`, weight: "warn" });
     score += 15;
@@ -163,21 +182,6 @@ function analyzeUrl(raw) {
   if (subCount > 4) {
     flags.push({ label: "Domínio com muitos subníveis, técnica comum para disfarçar a marca imitada", weight: "warn" });
     score += 10;
-  }
-
-  const hostLabels = host.split(".");
-  for (const [brand, officialDomains] of Object.entries(BRANDS)) {
-    const brandKey = brand.replace(/[^a-z0-9]/g, "");
-    if (brandKey.length < 2) continue;
-    const isOfficial = officialDomains.some((d) => host === d || host.endsWith("." + d));
-    const matches = brandKey.length <= 3
-      ? hostLabels.includes(brandKey)
-      : host.replace(/[^a-z0-9]/g, "").includes(brandKey);
-    if (matches && !isOfficial) {
-      flags.push({ label: `Menciona "${brand}" mas o domínio não é o oficial (${officialDomains[0]})`, weight: "high" });
-      score += 55;
-      break;
-    }
   }
 
   if (flags.length === 0) {
