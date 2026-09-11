@@ -464,6 +464,25 @@ Responda APENAS com um JSON válido, sem markdown, sem texto fora do JSON, no fo
           Para denunciar phishing: antispam.br · cartilha.cert.br
         </p>
 
+        <div className="rounded-sm p-4 mt-4" style={{ background: "var(--amber-bg)", border: "2px solid var(--amber)" }}>
+          <div className="vg-mono text-[10px] mb-2 flex items-center gap-1" style={{ color: "var(--amber)" }}>
+            <AlertTriangle size={12} /> GOLPE DA LIGAÇÃO FALSA (SPOOFING E DEEPFAKE)
+          </div>
+          <p className="text-sm mb-3" style={{ color: "var(--ink)" }}>
+            Criminosos conseguem fazer o nome e número de um parente, banco ou órgão público aparecerem certinhos na tela — mesmo sem ligar do aparelho real. <strong>Número certo na tela não é prova de identidade.</strong>
+          </p>
+          <p className="text-sm font-semibold mb-1" style={{ color: "var(--amber)" }}>Se vier um pedido de dinheiro urgente:</p>
+          <ol className="text-sm mb-3 pl-5" style={{ color: "var(--ink)", listStyleType: "decimal" }}>
+            <li className="mb-1"><strong>Desligue</strong> a ligação na hora — não continue a conversa.</li>
+            <li className="mb-1">Abra a <strong>agenda do seu celular</strong> (não rediscar, não responder a mensagem).</li>
+            <li className="mb-1">Ligue a partir do <strong>contato já salvo</strong>, de preferência por <strong>vídeo</strong>.</li>
+            <li>Confirme com a <strong>palavra de segurança da família</strong>, se tiverem uma combinada.</li>
+          </ol>
+          <p className="text-xs" style={{ color: "var(--ink-soft)" }}>
+            Já existem golpes de 2026 com deepfake de rosto e voz em tempo real durante videochamadas — por isso a palavra de segurança (nunca publicada nas redes) é a camada que nenhuma IA consegue adivinhar.
+          </p>
+        </div>
+
         <div className="vg-paper rounded-sm p-4 mt-4">
           <div className="vg-mono text-[10px] mb-2" style={{ color: "var(--ink-soft)" }}>VERIFICAR EMPRESA</div>
           <p className="text-sm mb-3" style={{ color: "var(--ink)" }}>
