@@ -310,7 +310,7 @@ const BANCOS = {
   "077": "Banco Inter", "104": "Caixa Econômica Federal", "212": "Banco Original",
   "237": "Bradesco", "260": "Nubank", "290": "PagBank/PagSeguro", "323": "Mercado Pago",
   "336": "C6 Bank", "341": "Itaú", "380": "PicPay", "422": "Banco Safra",
-  "655": "Banco Votorantim (BV)", "748": "Sicredi", "756": "Sicoob",
+  "655": "Banco Votorantim (BV)", "748": "Sicredi", "756": "Sicoob", "364": "Efí (Gerencianet)",
 };
 
 function onlyDigits(s) {
@@ -350,7 +350,7 @@ function fatorParaData(fator) {
 }
 
 function formatarDataBR(date) {
-  if (!date) return null;
+  if (!date) return "sem vencimento definido no código (comum em boleto à vista ou de prestador de serviço)";
   return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" });
 }
 
@@ -568,7 +568,7 @@ Responda APENAS com um JSON válido, sem markdown, sem texto fora do JSON, no fo
             <div className="text-sm mb-4" style={{ color: "var(--ink)" }}>
               <div className="py-1" style={{ borderTop: "1px solid var(--line)" }}><strong>Banco:</strong> {boleto.bancoNome}</div>
               <div className="py-1" style={{ borderTop: "1px solid var(--line)" }}><strong>Valor:</strong> R$ {boleto.valor.toFixed(2).replace(".", ",")}</div>
-              <div className="py-1" style={{ borderTop: "1px solid var(--line)" }}><strong>Vencimento:</strong> {formatarDataBR(boleto.dueDate) || "não foi possível calcular"}</div>
+              <div className="py-1" style={{ borderTop: "1px solid var(--line)" }}><strong>Vencimento:</strong> {formatarDataBR(boleto.dueDate)}</div>
             </div>
             <div className="p-3 rounded-sm flex items-start gap-2" style={{ background: "rgba(44,91,122,0.08)", border: "1px solid var(--info)" }}>
               <Info size={14} style={{ color: "var(--info)", marginTop: 2, flexShrink: 0 }} />
