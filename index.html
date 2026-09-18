@@ -42,7 +42,7 @@
 <div class="wrap">
   <div class="eyebrow">🔍 análise heurística local · instalável</div>
   <h1>Verificador de golpes</h1>
-  <p class="sub">Cole ou compartilhe um link/mensagem suspeita direto do WhatsApp ou SMS.</p>
+  <p class="sub">Cole ou compartilhe um link, mensagem, ou a linha digitável de um boleto.</p>
 
   <div class="card">
     <textarea id="input" rows="5" placeholder="Ex: Seu cartão foi bloqueado, clique aqui urgente: http://bradesco-seguro.top/confirmar"></textarea>
@@ -96,6 +96,10 @@ const BRANDS = {
   whatsapp: ["whatsapp.com"], instagram: ["instagram.com"], facebook: ["facebook.com"],
   netflix: ["netflix.com"], spotify: ["spotify.com"], apple: ["apple.com"], microsoft: ["microsoft.com", "live.com", "outlook.com"], google: ["google.com", "gmail.com"], "gov.br": ["gov.br"],
 };
+function extractSenderName(text) {
+  const m = text.match(/^\s*([A-Za-zÀ-ÖØ-öø-ÿ0-9][A-Za-zÀ-ÖØ-öø-ÿ0-9 .-]{1,28}?):/);
+  return m ? m[1].trim() : null;
+}
 function norm(s) { return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase(); }
 const OTP_WORDS = ["código de verificação","código de autenticação","use o código","seu código é","authentication code","verification code","código de acesso"];
 const POINTS_RE = /pont[ou]|milhas|cashback|vantagens|resgat|milheiro/i;
@@ -145,6 +149,12 @@ function analyzeUrl(raw) {
   return { flags, score: Math.min(score, 100), host };
 }
 
+function isNegatedContext(lower, word) {
+  const idx = lower.indexOf(word);
+  if (idx === -1) return false;
+  const before = lower.slice(Math.max(0, idx - 25), idx);
+  return /\b(nunca|jamais|nao)\b/.test(before);
+}
 function analyzeText(text, hasLink) {
   const lower = norm(text); const flags = []; let score = 0;
   const urgency = URGENCY_WORDS.filter((w) => lower.includes(norm(w)));
@@ -155,7 +165,7 @@ function analyzeText(text, hasLink) {
   } else if (hasSuspensionThreat) {
     flags.push({ label: `Ameaça de suspensão/bloqueio de conta, cartão ou documento`, weight: "warn" }); score += 15;
   }
-  const dataAsk = DATA_WORDS.filter((w) => lower.includes(norm(w)));
+  const dataAsk = DATA_WORDS.filter((w) => lower.includes(norm(w)) && !isNegatedContext(lower, norm(w)));
   if (dataAsk.length) { flags.push({ label: `Pede diretamente dado sensível ("${dataAsk[0]}")`, weight: "high" }); score += 55; }
   if (CODE_REQUEST_RE.test(lower)) {
     flags.push({ label: `Pede para você informar/repassar um código de verificação — golpe comum de captura de código (alguém tentando entrar numa conta usando seu código)`, weight: "high" }); score += 55;
@@ -196,6 +206,11 @@ function analyzeText(text, hasLink) {
     flags.push({ label: `Número de telefone com formato incomum (${oddPhone.length} dígitos) — evite retornar a ligação sem confirmar; pode ser spoofing ou golpe do tipo "wangiri"`, weight: "info" });
     score += 10;
   }
+  const mentionsBoleto = /\bboletos?\b/i.test(lower);
+  const mentionsPixKey = /chave pix|chave do pix|via pix|pelo pix|pix:/i.test(lower);
+  if (mentionsBoleto && mentionsPixKey) {
+    flags.push({ label: `Menciona "boleto" pago por chave Pix — um boleto de verdade nunca é pago trocando por chave Pix; essa mistura é sinal documentado de troca de beneficiário (golpe)`, weight: "high" }); score += 55;
+  }
   const hasPoints = POINTS_RE.test(lower);
   const hasBigNumber = /\d{2,3}[.,]\d{3}|\b\d{2,}\s*mil\b/i.test(text);
   if (hasPoints && hasLink && hasBigNumber) {
@@ -213,9 +228,115 @@ function verdictFromScore(score) {
   return { label: "SEM SINAIS EVIDENTES — na dúvida, confirme", color: "var(--green)" };
 }
 
+// ---------- Validação de boleto bancário ----------
+const BANCOS = {
+  "001": "Banco do Brasil", "033": "Santander", "041": "Banrisul", "070": "BRB",
+  "077": "Banco Inter", "104": "Caixa Econômica Federal", "212": "Banco Original",
+  "237": "Bradesco", "260": "Nubank", "290": "PagBank/PagSeguro", "323": "Mercado Pago",
+  "336": "C6 Bank", "341": "Itaú", "380": "PicPay", "422": "Banco Safra",
+  "655": "Banco Votorantim (BV)", "748": "Sicredi", "756": "Sicoob",
+};
+function onlyDigits(s) { return (s.match(/\d/g) || []).join(""); }
+function mod10Boleto(digits) {
+  let peso = 2, soma = 0;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let mult = Number(digits[i]) * peso;
+    if (mult > 9) mult = Math.floor(mult / 10) + (mult % 10);
+    soma += mult;
+    peso = peso === 2 ? 1 : 2;
+  }
+  return (10 - (soma % 10)) % 10;
+}
+function mod11Boleto(digits43) {
+  const weights = [2, 3, 4, 5, 6, 7, 8, 9];
+  let soma = 0, wi = 0;
+  for (let i = digits43.length - 1; i >= 0; i--) {
+    soma += Number(digits43[i]) * weights[wi % 8];
+    wi++;
+  }
+  const resto = soma % 11;
+  let dv = 11 - resto;
+  if (dv === 0 || dv === 10 || dv === 11) dv = 1;
+  return dv;
+}
+// Fator de vencimento: dias desde a data-base. Regra vigente desde 22/02/2025 (Febraban).
+function fatorParaData(fator) {
+  if (!fator || fator <= 0) return null;
+  const baseEfetiva = Date.UTC(2025, 1, 22) - 1000 * 86400000;
+  return new Date(baseEfetiva + fator * 86400000);
+}
+function formatarDataBR(date) {
+  if (!date) return null;
+  return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" });
+}
+function decodeBoleto(digits) {
+  let banco, moeda, fator, valorStr, campoLivre, dvGeralInformado, dv1, dv2, dv3, dv1Calc, dv2Calc, dv3Calc;
+  if (digits.length === 47) {
+    const campo1 = digits.slice(0, 10), campo2 = digits.slice(10, 21), campo3 = digits.slice(21, 32);
+    dvGeralInformado = digits[32];
+    const campo5 = digits.slice(33, 47);
+    const campo1Base = campo1.slice(0, 9); dv1 = campo1[9];
+    const campo2Base = campo2.slice(0, 10); dv2 = campo2[10];
+    const campo3Base = campo3.slice(0, 10); dv3 = campo3[10];
+    dv1Calc = mod10Boleto(campo1Base); dv2Calc = mod10Boleto(campo2Base); dv3Calc = mod10Boleto(campo3Base);
+    banco = campo1Base.slice(0, 3); moeda = campo1Base[3];
+    fator = campo5.slice(0, 4); valorStr = campo5.slice(4, 14);
+    campoLivre = campo1Base.slice(4, 9) + campo2Base + campo3Base;
+  } else if (digits.length === 44) {
+    banco = digits.slice(0, 3); moeda = digits[3]; dvGeralInformado = digits[4];
+    fator = digits.slice(5, 9); valorStr = digits.slice(9, 19); campoLivre = digits.slice(19, 44);
+  } else {
+    return null;
+  }
+  const semDV = banco + moeda + fator + valorStr + campoLivre;
+  const dvGeralCalc = mod11Boleto(semDV);
+  const fatorNum = Number(fator);
+  const valor = Number(valorStr) / 100;
+  const dueDate = fatorParaData(fatorNum);
+  const dv1Ok = dv1 === undefined || dv1Calc === Number(dv1);
+  const dv2Ok = dv2 === undefined || dv2Calc === Number(dv2);
+  const dv3Ok = dv3 === undefined || dv3Calc === Number(dv3);
+  const dvGeralOk = dvGeralCalc === Number(dvGeralInformado);
+  return {
+    banco, bancoNome: BANCOS[banco] || `banco código ${banco} (não identificado)`,
+    valor, dueDate, fatorNum,
+    allOk: dv1Ok && dv2Ok && dv3Ok && dvGeralOk,
+  };
+}
+function renderBoleto(b) {
+  const el = document.getElementById("result");
+  el.style.display = "block";
+  const okColor = b.allOk ? "var(--green)" : "var(--red)";
+  const okIcon = b.allOk ? "✅" : "❌";
+  const okLabel = b.allOk ? "Dígitos verificadores conferem" : "Dígitos verificadores NÃO conferem — número inválido ou adulterado";
+  el.innerHTML = `
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:16px; color:${okColor};">
+      <span>${okIcon}</span><span style="font-family:'Fraunces',serif; font-size:14px;">${okLabel}</span>
+    </div>
+    <div class="section-label">DADOS DECODIFICADOS</div>
+    <div style="font-size:14px; margin-bottom:16px;">
+      <div style="padding:4px 0; border-top:1px solid var(--line);"><strong>Banco:</strong> ${b.bancoNome}</div>
+      <div style="padding:4px 0; border-top:1px solid var(--line);"><strong>Valor:</strong> R$ ${b.valor.toFixed(2).replace(".", ",")}</div>
+      <div style="padding:4px 0; border-top:1px solid var(--line);"><strong>Vencimento:</strong> ${formatarDataBR(b.dueDate) || "não foi possível calcular"}</div>
+    </div>
+    <div style="padding:12px; border-radius:3px; background:rgba(44,91,122,0.08); border:1px solid var(--info); display:flex; gap:8px; align-items:flex-start;">
+      <span style="color:var(--info);">ℹ️</span>
+      <span style="font-size:14px;">Isso confirma que o número do boleto está bem formado — <strong>não confirma quem vai receber o dinheiro</strong>. Antes de pagar, confira o nome/CNPJ do beneficiário na tela de confirmação do seu banco, ou use a função DDA do app do seu banco.</span>
+    </div>
+  `;
+}
+
 function iconFor(weight) { return weight === "high" ? "⚠️" : weight === "warn" ? "⚠️" : weight === "info" ? "ℹ️" : "✅"; }
 
 function analyze(text) {
+  const digitsOnly = onlyDigits(text);
+  const nonSpaceLength = text.replace(/\s/g, "").length;
+  const looksLikeBoleto = (digitsOnly.length === 47 || digitsOnly.length === 44) && digitsOnly.length / nonSpaceLength > 0.8;
+  if (looksLikeBoleto) {
+    const decoded = decodeBoleto(digitsOnly);
+    if (decoded) return renderBoleto(decoded);
+  }
+
   const urls = extractUrls(text);
   const urlAnalyses = urls.map((u) => ({ url: u, ...analyzeUrl(u) }));
   const textAnalysis = analyzeText(text, urls.length > 0);
@@ -227,11 +348,19 @@ function analyze(text) {
 
   const el = document.getElementById("result");
   el.style.display = "block";
+  const senderName = extractSenderName(text);
+  const linkNotice = urlAnalyses.length > 0
+    ? `<div style="margin-bottom:16px; padding:12px; border-radius:3px; background:rgba(44,91,122,0.08); border:1px solid var(--info); display:flex; gap:8px; align-items:flex-start;">
+        <span style="color:var(--info);">🔗</span>
+        <span style="font-size:14px;"><strong>Não clique neste link.</strong> Entre direto no app oficial ou no site ${senderName ? `da <strong>${senderName}</strong>` : "da instituição que mandou"} — se a oferta for real, você acessa do mesmo jeito, e se não for, você fica protegido.</span>
+      </div>`
+    : "";
   el.innerHTML = `
     <div class="score-row">
       <div class="stamp" style="color:${verdict.color}">${verdict.label}</div>
       <div><div class="score-num" style="color:${verdict.color}">${combinedScore}</div><div class="score-label">score de risco /100</div></div>
     </div>
+    ${linkNotice}
     <div class="section-label">SINAIS DETECTADOS</div>
     <div>${allFlags.map(f => `<div class="flag-row"><span>${iconFor(f.weight)}</span><span>${f.label}</span></div>`).join("")}</div>
   `;
