@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { ShieldCheck, ShieldAlert, ShieldQuestion, Search, Link2, AlertTriangle, Loader2, Info } from "lucide-react";
+import { ShieldCheck, ShieldAlert, ShieldQuestion, Search, Link2, AlertTriangle, Loader2, Info, Receipt, CheckCircle2, XCircle } from "lucide-react";
 
 const STYLE = `
   @import url('https://fonts.googleapis.com/css2?family=Fraunces:ital,wght@0,500;0,600;0,700;1,500&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap');
@@ -105,6 +105,11 @@ const BRANDS = {
   "gov.br": ["gov.br"],
 };
 
+function extractSenderName(text) {
+  const m = text.match(/^\s*([A-Za-zÀ-ÖØ-öø-ÿ0-9][A-Za-zÀ-ÖØ-öø-ÿ0-9 .-]{1,28}?):/);
+  return m ? m[1].trim() : null;
+}
+
 function norm(s) {
   return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase();
 }
@@ -191,6 +196,13 @@ function analyzeUrl(raw) {
   return { flags, score: Math.min(score, 100), host };
 }
 
+function isNegatedContext(lower, word) {
+  const idx = lower.indexOf(word);
+  if (idx === -1) return false;
+  const before = lower.slice(Math.max(0, idx - 25), idx);
+  return /\b(nunca|jamais|nao)\b/.test(before);
+}
+
 function analyzeText(text, hasLink) {
   const lower = norm(text);
   const flags = [];
@@ -209,7 +221,7 @@ function analyzeText(text, hasLink) {
     flags.push({ label: `Ameaça de suspensão/bloqueio de conta, cartão ou documento`, weight: "warn" });
     score += 15;
   }
-  const dataAsk = DATA_WORDS.filter((w) => lower.includes(norm(w)));
+  const dataAsk = DATA_WORDS.filter((w) => lower.includes(norm(w)) && !isNegatedContext(lower, norm(w)));
   if (dataAsk.length) {
     flags.push({ label: `Pede diretamente dado sensível ("${dataAsk[0]}")`, weight: "high" });
     score += 55;
@@ -264,6 +276,12 @@ function analyzeText(text, hasLink) {
     });
     score += 10;
   }
+  const mentionsBoleto = /\bboletos?\b/i.test(lower);
+  const mentionsPixKey = /chave pix|chave do pix|via pix|pelo pix|pix:/i.test(lower);
+  if (mentionsBoleto && mentionsPixKey) {
+    flags.push({ label: `Menciona "boleto" pago por chave Pix — um boleto de verdade nunca é pago trocando por chave Pix; essa mistura é sinal documentado de troca de beneficiário (golpe)`, weight: "high" });
+    score += 55;
+  }
   const hasPoints = POINTS_RE.test(lower);
   const hasBigNumber = /\d{2,3}[.,]\d{3}|\b\d{2,}\s*mil\b/i.test(text);
   if (hasPoints && hasLink && hasBigNumber) {
@@ -285,16 +303,129 @@ function verdictFromScore(score) {
   return { key: "confiavel", label: "SEM SINAIS EVIDENTES — na dúvida, confirme", color: "var(--green)", bg: "var(--green-bg)", Icon: ShieldCheck };
 }
 
+// ---------- Validação de boleto bancário ----------
+
+const BANCOS = {
+  "001": "Banco do Brasil", "033": "Santander", "041": "Banrisul", "070": "BRB",
+  "077": "Banco Inter", "104": "Caixa Econômica Federal", "212": "Banco Original",
+  "237": "Bradesco", "260": "Nubank", "290": "PagBank/PagSeguro", "323": "Mercado Pago",
+  "336": "C6 Bank", "341": "Itaú", "380": "PicPay", "422": "Banco Safra",
+  "655": "Banco Votorantim (BV)", "748": "Sicredi", "756": "Sicoob",
+};
+
+function onlyDigits(s) {
+  return (s.match(/\d/g) || []).join("");
+}
+
+function mod10Boleto(digits) {
+  let peso = 2, soma = 0;
+  for (let i = digits.length - 1; i >= 0; i--) {
+    let mult = Number(digits[i]) * peso;
+    if (mult > 9) mult = Math.floor(mult / 10) + (mult % 10);
+    soma += mult;
+    peso = peso === 2 ? 1 : 2;
+  }
+  return (10 - (soma % 10)) % 10;
+}
+
+function mod11Boleto(digits43) {
+  const weights = [2, 3, 4, 5, 6, 7, 8, 9];
+  let soma = 0, wi = 0;
+  for (let i = digits43.length - 1; i >= 0; i--) {
+    soma += Number(digits43[i]) * weights[wi % 8];
+    wi++;
+  }
+  const resto = soma % 11;
+  let dv = 11 - resto;
+  if (dv === 0 || dv === 10 || dv === 11) dv = 1;
+  return dv;
+}
+
+// Fator de vencimento: dias desde a data-base. Regra vigente desde 22/02/2025 (Febraban),
+// que reiniciou a contagem em 1000 após o antigo campo estourar o limite de 9999.
+function fatorParaData(fator) {
+  if (!fator || fator <= 0) return null;
+  const baseEfetiva = Date.UTC(2025, 1, 22) - 1000 * 86400000;
+  return new Date(baseEfetiva + fator * 86400000);
+}
+
+function formatarDataBR(date) {
+  if (!date) return null;
+  return date.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric", timeZone: "UTC" });
+}
+
+function decodeBoleto(digits) {
+  // Aceita linha digitável de 47 dígitos ou código de barras de 44 dígitos.
+  let banco, moeda, fator, valorStr, campoLivre, dvGeralInformado, dv1, dv2, dv3, dv1Calc, dv2Calc, dv3Calc;
+
+  if (digits.length === 47) {
+    const campo1 = digits.slice(0, 10);
+    const campo2 = digits.slice(10, 21);
+    const campo3 = digits.slice(21, 32);
+    dvGeralInformado = digits[32];
+    const campo5 = digits.slice(33, 47);
+
+    const campo1Base = campo1.slice(0, 9);
+    dv1 = campo1[9];
+    const campo2Base = campo2.slice(0, 10);
+    dv2 = campo2[10];
+    const campo3Base = campo3.slice(0, 10);
+    dv3 = campo3[10];
+
+    dv1Calc = mod10Boleto(campo1Base);
+    dv2Calc = mod10Boleto(campo2Base);
+    dv3Calc = mod10Boleto(campo3Base);
+
+    banco = campo1Base.slice(0, 3);
+    moeda = campo1Base[3];
+    fator = campo5.slice(0, 4);
+    valorStr = campo5.slice(4, 14);
+    campoLivre = campo1Base.slice(4, 9) + campo2Base + campo3Base;
+  } else if (digits.length === 44) {
+    banco = digits.slice(0, 3);
+    moeda = digits[3];
+    dvGeralInformado = digits[4];
+    fator = digits.slice(5, 9);
+    valorStr = digits.slice(9, 19);
+    campoLivre = digits.slice(19, 44);
+  } else {
+    return null;
+  }
+
+  const semDV = banco + moeda + fator + valorStr + campoLivre;
+  const dvGeralCalc = mod11Boleto(semDV);
+  const fatorNum = Number(fator);
+  const valor = Number(valorStr) / 100;
+  const dueDate = fatorParaData(fatorNum);
+
+  const dv1Ok = dv1 === undefined || dv1Calc === Number(dv1);
+  const dv2Ok = dv2 === undefined || dv2Calc === Number(dv2);
+  const dv3Ok = dv3 === undefined || dv3Calc === Number(dv3);
+  const dvGeralOk = dvGeralCalc === Number(dvGeralInformado);
+
+  return {
+    banco,
+    bancoNome: BANCOS[banco] || `banco código ${banco} (não identificado)`,
+    valor,
+    dueDate,
+    fatorNum,
+    allOk: dv1Ok && dv2Ok && dv3Ok && dvGeralOk,
+    dv1Ok, dv2Ok, dv3Ok, dvGeralOk,
+  };
+}
+
 export default function VerificadorGolpes() {
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
+  const [boleto, setBoleto] = useState(null);
   const [aiText, setAiText] = useState(null);
   const [aiError, setAiError] = useState(false);
 
   function handleClear() {
     setInput("");
     setResult(null);
+    setBoleto(null);
     setAiText(null);
     setAiError(false);
   }
@@ -303,8 +434,20 @@ export default function VerificadorGolpes() {
     if (!input.trim()) return;
     setLoading(true);
     setResult(null);
+    setBoleto(null);
     setAiText(null);
     setAiError(false);
+
+    const digitsOnly = onlyDigits(input);
+    const nonSpaceLength = input.replace(/\s/g, "").length;
+    const looksLikeBoleto = (digitsOnly.length === 47 || digitsOnly.length === 44) && digitsOnly.length / nonSpaceLength > 0.8;
+
+    if (looksLikeBoleto) {
+      const decoded = decodeBoleto(digitsOnly);
+      setBoleto(decoded);
+      setLoading(false);
+      return;
+    }
 
     const urls = extractUrls(input);
     const urlAnalyses = urls.map((u) => ({ url: u, ...analyzeUrl(u) }));
@@ -318,7 +461,7 @@ export default function VerificadorGolpes() {
     // pedido de "liberar" dispositivo) não pode ser diluído pela média com sinais mais fracos.
     const combinedScore = Math.max(urlScore, textAnalysis.score, weighted);
 
-    const localResult = { urlAnalyses, textAnalysis, combinedScore };
+    const localResult = { urlAnalyses, textAnalysis, combinedScore, senderName: extractSenderName(input) };
     setResult(localResult);
 
     try {
@@ -382,7 +525,7 @@ Responda APENAS com um JSON válido, sem markdown, sem texto fora do JSON, no fo
         </div>
         <h1 className="vg-headline text-3xl mb-1" style={{ color: "var(--paper)" }}>Verificador de golpes</h1>
         <p className="text-sm mb-6" style={{ color: "#A9B1C2" }}>
-          Cole um link ou o texto de uma mensagem suspeita. Combina checagem técnica do endereço com leitura do conteúdo pela IA.
+          Cole um link, o texto de uma mensagem suspeita, ou a linha digitável/código de barras de um boleto.
         </p>
 
         <div className="vg-paper rounded-sm p-4 mb-4">
@@ -413,6 +556,29 @@ Responda APENAS com um JSON válido, sem markdown, sem texto fora do JSON, no fo
           </div>
         </div>
 
+        {boleto && (
+          <div className="vg-paper rounded-sm p-5 mb-4">
+            <div className="flex items-center gap-2 mb-4" style={{ color: boleto.allOk ? "var(--green)" : "var(--red)" }}>
+              {boleto.allOk ? <CheckCircle2 size={20} /> : <XCircle size={20} />}
+              <span className="vg-headline text-sm">
+                {boleto.allOk ? "Dígitos verificadores conferem" : "Dígitos verificadores NÃO conferem — número inválido ou adulterado"}
+              </span>
+            </div>
+            <div className="vg-mono text-[10px] mb-1" style={{ color: "var(--ink-soft)" }}>DADOS DECODIFICADOS</div>
+            <div className="text-sm mb-4" style={{ color: "var(--ink)" }}>
+              <div className="py-1" style={{ borderTop: "1px solid var(--line)" }}><strong>Banco:</strong> {boleto.bancoNome}</div>
+              <div className="py-1" style={{ borderTop: "1px solid var(--line)" }}><strong>Valor:</strong> R$ {boleto.valor.toFixed(2).replace(".", ",")}</div>
+              <div className="py-1" style={{ borderTop: "1px solid var(--line)" }}><strong>Vencimento:</strong> {formatarDataBR(boleto.dueDate) || "não foi possível calcular"}</div>
+            </div>
+            <div className="p-3 rounded-sm flex items-start gap-2" style={{ background: "rgba(44,91,122,0.08)", border: "1px solid var(--info)" }}>
+              <Info size={14} style={{ color: "var(--info)", marginTop: 2, flexShrink: 0 }} />
+              <p className="text-sm" style={{ color: "var(--ink)" }}>
+                Isso confirma que o número do boleto está bem formado — <strong>não confirma quem vai receber o dinheiro</strong>. Antes de pagar, confira o nome/CNPJ do beneficiário na tela de confirmação do seu banco, ou use a função DDA do app do seu banco.
+              </p>
+            </div>
+          </div>
+        )}
+
         {result && verdict && (
           <div className="vg-paper rounded-sm p-5 mb-4">
             <div className="flex items-center justify-between mb-4">
@@ -440,6 +606,15 @@ Responda APENAS com um JSON válido, sem markdown, sem texto fora do JSON, no fo
                 <Info size={14} style={{ marginTop: 2, color: "var(--ink-soft)", flexShrink: 0 }} />
                 <p className="text-xs" style={{ color: "var(--ink-soft)" }}>
                   A camada de IA não respondeu — veredito abaixo baseado apenas nas checagens técnicas.
+                </p>
+              </div>
+            )}
+
+            {result.urlAnalyses.length > 0 && (
+              <div className="mb-4 p-3 rounded-sm flex items-start gap-2" style={{ background: "rgba(44,91,122,0.08)", border: "1px solid var(--info)" }}>
+                <Link2 size={14} style={{ color: "var(--info)", marginTop: 2, flexShrink: 0 }} />
+                <p className="text-sm" style={{ color: "var(--ink)" }}>
+                  <strong>Não clique neste link.</strong> Entre direto no app oficial ou no site {result.senderName ? <>da <strong>{result.senderName}</strong></> : "da instituição que mandou"} — se a oferta for real, você acessa do mesmo jeito, e se não for, você fica protegido.
                 </p>
               </div>
             )}
